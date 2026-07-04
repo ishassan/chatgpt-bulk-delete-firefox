@@ -70,9 +70,11 @@ test("detects delete controls without matching extension controls", () => {
     </body>
   `);
 
-  const button = core.findDeleteAction(document);
+  const extensionButton = document.querySelector(".cbd-button");
+  const deleteButton = document.querySelector("[aria-label='Delete chat']");
 
-  assert.equal(button?.getAttribute("aria-label"), "Delete chat");
+  assert.equal(core.isDeleteAction(extensionButton), false);
+  assert.equal(core.isDeleteAction(deleteButton), true);
 });
 
 test("treats inline selectors and panels as extension-owned controls", () => {
@@ -86,5 +88,6 @@ test("treats inline selectors and panels as extension-owned controls", () => {
 
   assert.equal(core.isExtensionElement(document.querySelector(".cbd-panel button")), true);
   assert.equal(core.isExtensionElement(document.querySelector(".cbd-selector")), true);
-  assert.equal(core.findDeleteAction(document)?.getAttribute("aria-label"), "Delete chat");
+  assert.equal(core.isDeleteAction(document.querySelector(".cbd-panel button")), false);
+  assert.equal(core.isDeleteAction(document.querySelector("[aria-label='Delete chat']")), true);
 });

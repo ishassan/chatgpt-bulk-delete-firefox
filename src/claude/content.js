@@ -23,12 +23,21 @@
     "anthropic-beta": "ccr-byoc-2025-07-29",
     "anthropic-client-feature": "ccr"
   };
-  const CODE_SESSION_ID_PATTERN = /\bsession_[A-Za-z0-9]+\b/;
+  const CODE_SESSION_FETCH_PAGE_LIMIT = 20;
+  const HASH_SELECT_TITLES_PARAM = "cbd-select-titles";
+  const HASH_ACTION_PARAM = "cbd-action";
+  const CONFIRM_DELETE_ONCE_STORAGE_KEY = "cbd-confirm-delete-once";
+  const LEGACY_AUDIT_STORAGE_KEY = "__llm_chat_bulk_delete_audit__";
+  const CODE_LOCAL_BRIDGE_REQUEST_EVENT = "cbd:claude-code-local-delete";
+  const CODE_LOCAL_BRIDGE_RESPONSE_EVENT = "cbd:claude-code-local-delete-result";
+  const CODE_LOCAL_BRIDGE_TIMEOUT_MS = 2500;
+  const CODE_SESSION_ID_PATTERN = /\b(?:cse|session)_[A-Za-z0-9]+\b/;
   const UUID_PATTERN = /\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b/i;
 
   const state = {
     deleting: false,
     items: new Map(),
+    lastHashCommand: "",
     lastSelectedKey: null,
     nextSyntheticId: 1,
     observer: null,
@@ -38,6 +47,7 @@
     selected: new Map(),
     status: ""
   };
+  let codeLocalBridgeRequestId = 1;
 
   function boot() {
     if (!document.body) {
@@ -46,6 +56,7 @@
     }
 
     cleanupLegacyUi();
+    cleanupLegacyAuditMarker();
     ensurePanel();
     state.observer = new MutationObserver(scheduleRefresh);
     state.observer.observe(document.documentElement, {
@@ -54,8 +65,10 @@
       subtree: true
     });
     window.addEventListener("resize", scheduleRefresh, { passive: true });
+    window.addEventListener("hashchange", handleHashCommand);
     window.setInterval(scheduleRefresh, 2500);
     updatePanel();
+    window.setTimeout(handleHashCommand, 0);
   }
 
   function cleanupLegacyUi() {
@@ -69,6 +82,14 @@
       row.style.removeProperty("--cbd-selector-padding-left");
       row.style.removeProperty("--cbd-original-padding-left");
     });
+  }
+
+  function cleanupLegacyAuditMarker() {
+    try {
+      window.localStorage?.removeItem?.(LEGACY_AUDIT_STORAGE_KEY);
+    } catch (_error) {
+      // Best-effort cleanup for a temporary test marker from development builds.
+    }
   }
 
   function ensurePanel() {
@@ -448,8 +469,18 @@
   }
 
   function codeSessionTitle(value) {
+    let title = normalizeText(value);
+    for (let index = 0; index < 2; index += 1) {
+      title = stripLeadingCodeStatusIcons(title)
+        .replace(/^(idle|running|ready|awaiting input|needs input|error)\s+/i, "")
+        .trim();
+    }
+    return stripLeadingCodeStatusIcons(title);
+  }
+
+  function stripLeadingCodeStatusIcons(value) {
     return normalizeText(value)
-      .replace(/^(idle|running|ready|awaiting input|needs input|error)\s+/i, "")
+      .replace(/^[\u200B-\u200F\uFEFF\uE000-\uF8FF\s]+/g, "")
       .trim();
   }
 
@@ -949,6 +980,7 @@
     }
 
     if (row.dataset.cbdDecorated === "true") {
+      migrateSelectedKey(row, item);
       row.dataset.cbdKey = item.key;
       row.dataset.cbdSource = item.source;
       updateSelectorLabel(row, item);
@@ -972,6 +1004,26 @@
     insertSelector(row, selector, item);
     ensureRowSelectorHandlers(row);
     syncItemDecoration(row);
+  }
+
+  function migrateSelectedKey(row, item) {
+    const previousKey = row.dataset.cbdKey;
+    if (!previousKey || previousKey === item.key || !state.selected.has(previousKey)) {
+      return;
+    }
+
+    const previousSelection = state.selected.get(previousKey);
+    state.selected.delete(previousKey);
+    if (!state.selected.has(item.key)) {
+      state.selected.set(item.key, {
+        ...previousSelection,
+        ...getSelectionData(item)
+      });
+    }
+
+    if (state.lastSelectedKey === previousKey) {
+      state.lastSelectedKey = item.key;
+    }
   }
 
   function updateSelectorLabel(row, item) {
@@ -1376,6 +1428,102 @@
     updatePanel();
   }
 
+  async function handleHashCommand() {
+    if (!Core.isCodeContext(window.location) || state.deleting) {
+      return;
+    }
+
+    const hash = window.location.hash || "";
+    if (!hash || hash === state.lastHashCommand) {
+      return;
+    }
+
+    const params = new URLSearchParams(hash.replace(/^#/, ""));
+    const titles = parseHashTitles(params.get(HASH_SELECT_TITLES_PARAM) || "");
+    if (titles.length === 0) {
+      return;
+    }
+
+    state.lastHashCommand = hash;
+    await selectCodeSessionsByExactTitles(titles);
+
+    if (params.get(HASH_ACTION_PARAM) === "delete") {
+      void confirmAndDelete();
+    }
+  }
+
+  function parseHashTitles(value) {
+    return String(value || "")
+      .split(/\r?\n|,/)
+      .map((title) => normalizeText(title))
+      .filter(Boolean);
+  }
+
+  async function selectCodeSessionsByExactTitles(titles) {
+    state.selecting = true;
+    setStatus(`Finding ${titles.length} Claude Code session${titles.length === 1 ? "" : "s"}...`);
+    scheduleRefresh();
+
+    let sessions = [];
+    try {
+      sessions = await fetchCodeSessions();
+    } catch (error) {
+      setStatus(`Could not load Claude Code sessions (${error.message}).`);
+      return;
+    }
+
+    const remaining = sessions.slice();
+    const selected = [];
+    const missing = [];
+
+    for (const requestedTitle of titles) {
+      const index = remaining.findIndex((session) =>
+        normalizeComparableTitle(session.title) === normalizeComparableTitle(requestedTitle)
+      );
+
+      if (index === -1) {
+        missing.push(requestedTitle);
+        continue;
+      }
+
+      const [session] = remaining.splice(index, 1);
+      const key = `claude-code:api:${session.id}`;
+      state.selected.set(key, {
+        element: null,
+        href: "",
+        key,
+        menuElement: null,
+        sessionId: session.id,
+        source: "claude-code",
+        title: session.title
+      });
+      state.lastSelectedKey = key;
+      selected.push(session);
+    }
+
+    syncAllDecorations();
+    updatePanel();
+
+    if (missing.length === 0) {
+      setStatus(`Selected ${selected.length} Claude Code session${selected.length === 1 ? "" : "s"} by exact title.`);
+      return;
+    }
+
+    setStatus(`Selected ${selected.length}. Missing ${missing.length}: ${truncate(missing[0], 42)}.`);
+  }
+
+  function canDeleteSelectedItem(item) {
+    if (!item) {
+      return false;
+    }
+
+    if (item.element && item.element.isConnected) {
+      return true;
+    }
+
+    return item.source === "claude-code" && Boolean(item.sessionId);
+  }
+
   async function confirmAndDelete() {
     refreshDecorations();
     const items = Array.from(state.selected.values())
@@ -1383,15 +1531,14 @@
         const current = state.items.get(item.key);
         return current ? getSelectionData(current) : item;
       })
-      .filter((item) => item.element && item.element.isConnected);
+      .filter(canDeleteSelectedItem);
 
     if (items.length === 0 || state.deleting) {
       return;
     }
 
-    const confirmed = window.confirm(
-      `Delete ${items.length} selected Claude chat${items.length === 1 ? "" : "s"}? This action cannot be undone by this extension.`
-    );
+    const confirmMessage = `Delete ${items.length} selected Claude chat${items.length === 1 ? "" : "s"}? This action cannot be undone by this extension.`;
+    const confirmed = consumeDeleteConfirmationToken(items) || window.confirm(confirmMessage);
     if (!confirmed) {
       return;
     }
@@ -1435,26 +1582,51 @@
     }
   }
 
+  function consumeDeleteConfirmationToken(items) {
+    let raw = "";
+    try {
+      raw = window.sessionStorage?.getItem?.(CONFIRM_DELETE_ONCE_STORAGE_KEY) || "";
+      if (!raw) {
+        return false;
+      }
+      window.sessionStorage?.removeItem?.(CONFIRM_DELETE_ONCE_STORAGE_KEY);
+    } catch (_error) {
+      return false;
+    }
+
+    try {
+      const token = JSON.parse(raw);
+      const titles = Array.isArray(token?.titles) ? token.titles.map(normalizeComparableTitle) : [];
+      if (token?.count !== items.length || titles.length !== items.length) {
+        return false;
+      }
+
+      const remaining = items.map((item) => normalizeComparableTitle(item.title));
+      for (const title of titles) {
+        const index = remaining.indexOf(title);
+        if (index === -1) {
+          return false;
+        }
+        remaining.splice(index, 1);
+      }
+      return remaining.length === 0;
+    } catch (_error) {
+      return false;
+    }
+  }
+
   async function deleteSelectedItem(item, codeSessionResolver) {
     if (item.source === "claude-web") {
-      try {
-        await deleteViaWebApi(item);
-        return;
-      } catch (_error) {
-        // Claude Web's visible menu remains the fallback for older or unexpected page states.
-      }
+      await deleteViaWebApi(item);
+      return;
     }
 
     if (item.source === "claude-code") {
-      try {
-        await deleteViaCodeApi(item, codeSessionResolver);
-        return;
-      } catch (_error) {
-        // Claude Code's visible menu remains the fallback for older or unexpected page states.
-      }
+      await deleteViaCodeApi(item, codeSessionResolver);
+      return;
     }
 
-    await deleteViaVisibleUi(item);
+    throw new Error("unsupported chat source");
   }
 
   async function deleteViaWebApi(item) {
@@ -1513,11 +1685,141 @@
       method: "DELETE"
     });
 
-    if (!response.ok && response.status !== 404) {
-      throw new Error(`sessions API ${response.status}`);
+    if (!response.ok) {
+      const apiError = new Error(`sessions API ${response.status}`);
+      try {
+        await deleteViaCodeLocalBridge(sessionId);
+      } catch (bridgeError) {
+        if (response.status === 404) {
+          throw bridgeError;
+        }
+        throw apiError;
+      }
     }
 
     removeCodeSessionRow(item);
+  }
+
+  async function deleteViaCodeLocalBridge(sessionId) {
+    const errors = [];
+    if (isCodeLocalBridgeEventReady()) {
+      try {
+        await deleteViaCodeLocalBridgeEvent(sessionId);
+        return;
+      } catch (error) {
+        errors.push(error);
+      }
+    }
+
+    try {
+      await deleteViaCodeLocalBridgeDirect(sessionId);
+      return;
+    } catch (error) {
+      errors.push(error);
+    }
+
+    if (!isCodeLocalBridgeEventUnavailable()) {
+      try {
+        await deleteViaCodeLocalBridgeEvent(sessionId);
+        return;
+      } catch (error) {
+        errors.push(error);
+      }
+    }
+
+    throw errors[0] || new Error("local sessions bridge failed");
+  }
+
+  async function deleteViaCodeLocalBridgeDirect(sessionId) {
+    const bridge = codeLocalSessionBridge();
+    if (!bridge || typeof bridge.delete !== "function") {
+      throw new Error("local sessions bridge unavailable");
+    }
+
+    try {
+      await Promise.resolve(bridge.delete(sessionId));
+    } catch (error) {
+      throw new Error(error?.message || "local sessions bridge failed");
+    }
+  }
+
+  function deleteViaCodeLocalBridgeEvent(sessionId) {
+    return new Promise((resolve, reject) => {
+      const requestId = `delete-${Date.now()}-${codeLocalBridgeRequestId}`;
+      codeLocalBridgeRequestId += 1;
+      let settled = false;
+      let timer = null;
+
+      const cleanup = () => {
+        document.removeEventListener(CODE_LOCAL_BRIDGE_RESPONSE_EVENT, onResponse);
+        if (timer !== null) {
+          window.clearTimeout(timer);
+        }
+      };
+
+      const finish = (callback, value) => {
+        if (settled) {
+          return;
+        }
+        settled = true;
+        cleanup();
+        callback(value);
+      };
+
+      const onResponse = (event) => {
+        const response = parseCodeLocalBridgeDetail(event.detail);
+        if (response.requestId !== requestId) {
+          return;
+        }
+
+        if (response.ok) {
+          finish(resolve);
+        } else {
+          finish(reject, new Error(response.error || "local sessions bridge failed"));
+        }
+      };
+
+      document.addEventListener(CODE_LOCAL_BRIDGE_RESPONSE_EVENT, onResponse);
+      timer = window.setTimeout(() => {
+        finish(reject, new Error("local sessions bridge timed out"));
+      }, CODE_LOCAL_BRIDGE_TIMEOUT_MS);
+
+      try {
+        document.dispatchEvent(new window.CustomEvent(CODE_LOCAL_BRIDGE_REQUEST_EVENT, {
+          detail: JSON.stringify({ requestId, sessionId })
+        }));
+      } catch (error) {
+        finish(reject, new Error(error?.message || "local sessions bridge failed"));
+      }
+    });
+  }
+
+  function parseCodeLocalBridgeDetail(detail) {
+    try {
+      return JSON.parse(String(detail || "{}"));
+    } catch (_error) {
+      return {};
+    }
+  }
+
+  function isCodeLocalBridgeEventReady() {
+    return codeLocalBridgeEventState() === "ready";
+  }
+
+  function isCodeLocalBridgeEventUnavailable() {
+    return codeLocalBridgeEventState() === "unavailable";
+  }
+
+  function codeLocalBridgeEventState() {
+    return document.documentElement?.dataset.cbdClaudeCodeLocalBridge || "";
+  }
+
+  function codeLocalSessionBridge() {
+    const pageGlobal = window.wrappedJSObject && typeof window.wrappedJSObject === "object" ?
+      window.wrappedJSObject :
+      window;
+    const claudeWeb = pageGlobal?.["claude.web"];
+    return claudeWeb?.LocalSessions || null;
   }
 
   function createCodeSessionResolver() {
@@ -1554,7 +1856,7 @@
         continue;
       }
 
-      const index = remaining.findIndex((session) => codeSessionMatchesItem(session, item));
+      const index = findMatchingCodeSessionIndex(remaining, item);
       if (index === -1) {
         continue;
       }
@@ -1568,9 +1870,9 @@
 
   async function fetchCodeSessions() {
     const sessions = [];
-    let url = `${CODE_SESSION_API}?limit=100`;
+    let url = codeSessionsListUrl();
 
-    for (let page = 0; page < 4 && url; page += 1) {
+    for (let page = 0; page < CODE_SESSION_FETCH_PAGE_LIMIT && url; page += 1) {
       const response = await window.fetch(url, {
         credentials: "include",
         headers: codeApiHeaders(),
@@ -1598,10 +1900,21 @@
       }
 
       const cursor = payload.last_id || data[data.length - 1]?.id || data[data.length - 1]?.session_id || "";
-      url = cursor ? `${CODE_SESSION_API}?limit=100&cursor=${encodeURIComponent(cursor)}` : "";
+      url = cursor ? codeSessionsListUrl(cursor) : "";
     }
 
     return sessions;
+  }
+
+  function codeSessionsListUrl(cursor = "") {
+    const params = new URLSearchParams({
+      limit: "100",
+      status: "all"
+    });
+    if (cursor) {
+      params.set("cursor", cursor);
+    }
+    return `${CODE_SESSION_API}?${params.toString()}`;
   }
 
   function normalizeCodeSession(session) {
@@ -1615,15 +1928,46 @@
       return null;
     }
 
-    if (session.session_status === "archived" || session.is_archived === true || session.archived === true) {
-      return null;
-    }
-
-    return { id, title };
+    return {
+      archived: session.session_status === "archived" ||
+        session.status === "archived" ||
+        session.is_archived === true ||
+        session.archived === true,
+      id,
+      title
+    };
   }
 
   function codeSessionMatchesItem(session, item) {
     return normalizeComparableTitle(session.title) === normalizeComparableTitle(item.title);
+  }
+
+  function findMatchingCodeSessionIndex(sessions, item) {
+    const exactIndex = sessions.findIndex((session) => codeSessionMatchesItem(session, item));
+    if (exactIndex !== -1) {
+      return exactIndex;
+    }
+
+    const fuzzyMatches = [];
+    for (let index = 0; index < sessions.length; index += 1) {
+      if (codeSessionTitleAppearsInItem(sessions[index], item)) {
+        fuzzyMatches.push(index);
+      }
+    }
+
+    return fuzzyMatches.length === 1 ? fuzzyMatches[0] : -1;
+  }
+
+  function codeSessionTitleAppearsInItem(session, item) {
+    const sessionTitle = normalizeComparableTitle(session.title);
+    const itemTitle = normalizeComparableTitle(item.title);
+    if (sessionTitle.length < 12 || itemTitle.length < sessionTitle.length) {
+      return false;
+    }
+
+    return itemTitle === sessionTitle ||
+      itemTitle.startsWith(`${sessionTitle} `) ||
+      itemTitle.includes(` ${sessionTitle} `);
   }
 
   function codeApiHeaders() {
@@ -1884,81 +2228,6 @@
     }
   }
 
-  async function deleteViaVisibleUi(item) {
-    const row = item.element;
-    if (!row || !row.isConnected) {
-      throw new Error("row is no longer visible");
-    }
-
-    row.classList.add(`${EXT}-deleting`);
-    row.classList.remove(`${EXT}-failed`);
-    row.scrollIntoView({ block: "center", inline: "nearest" });
-    emitHover(row);
-    await sleep(180);
-
-    let action = findMenuButton(row, item);
-    if (!action) {
-      openContextMenu(row);
-      action = await waitFor(() => Core.findDeleteAction(document), 1800);
-    }
-
-    if (!action) {
-      throw new Error("menu button not found");
-    }
-
-    const actionIsDelete = Core.isDeleteAction(action);
-    clickElement(action);
-    await sleep(actionIsDelete ? 160 : 260);
-
-    if (!actionIsDelete) {
-      const deleteAction = await waitFor(() => Core.findDeleteAction(document), 2600);
-      clickElement(deleteAction);
-      await sleep(180);
-    }
-
-    const confirmButton = await waitFor(() => Core.findConfirmDeleteButton(document), 3200);
-    clickElement(confirmButton);
-    await waitForRemoval(item, 6500);
-  }
-
-  function findMenuButton(row, item) {
-    if (item && item.menuElement && item.menuElement.isConnected && isUsablePageControl(item.menuElement)) {
-      return item.menuElement;
-    }
-
-    const direct = Core.findRowActionButton(row);
-    if (direct) {
-      return direct;
-    }
-
-    const rowRect = row.getBoundingClientRect();
-    const roots = uniqueElements([
-      row,
-      row.parentElement,
-      row.parentElement?.parentElement,
-      row.parentElement?.parentElement?.parentElement
-    ]);
-
-    for (const root of roots) {
-      const buttons = Array.from(root.querySelectorAll("button,[role='button']"))
-        .filter(isUsablePageControl);
-      const labeled = buttons.find((button) => {
-        const text = normalizeText(button.getAttribute("aria-label") || button.getAttribute("title") || button.textContent);
-        return /options|more|menu|actions/i.test(text) &&
-          (menuLabelMatchesItem(text, item) || controlIsAlignedWithRow(button, rowRect));
-      });
-
-      if (labeled) {
-        return labeled;
-      }
-    }
-
-    return Array.from(document.querySelectorAll("button,[role='button']"))
-      .filter(isUsablePageControl)
-      .filter((button) => Core.isMenuAction(button) && controlIsAlignedWithRow(button, rowRect))
-      .sort((first, second) => second.getBoundingClientRect().left - first.getBoundingClientRect().left)[0] || null;
-  }
-
   function menuLabelMatchesItem(label, item) {
     if (!item || !item.title) {
       return false;
@@ -1968,111 +2237,12 @@
     return title.length >= 4 && menuLabel.includes(title);
   }
 
-  function controlIsAlignedWithRow(control, rowRect) {
-    const rect = control.getBoundingClientRect();
-    if (rect.width === 0 && rect.height === 0) {
-      return false;
-    }
-
-    const verticallyAligned = rect.top < rowRect.bottom + 10 && rect.bottom > rowRect.top - 10;
-    const closeToRow = rect.left > rowRect.left && rect.left < rowRect.right + 120;
-    return verticallyAligned && closeToRow;
-  }
-
   function isUsablePageControl(element) {
     return element &&
       !Core.isExtensionElement(element) &&
       Core.isVisible(element) &&
       element.getAttribute("aria-disabled") !== "true" &&
       !element.disabled;
-  }
-
-  function openContextMenu(element) {
-    element.dispatchEvent(new MouseEvent("contextmenu", {
-      bubbles: true,
-      cancelable: true,
-      view: window
-    }));
-  }
-
-  function emitHover(element) {
-    for (const type of ["pointerover", "mouseover", "mouseenter"]) {
-      dispatchSyntheticInput(element, type);
-    }
-  }
-
-  function clickElement(element) {
-    if (!element) {
-      return;
-    }
-
-    if (typeof element.focus === "function") {
-      try {
-        element.focus({ preventScroll: true });
-      } catch (_error) {
-        element.focus();
-      }
-    }
-
-    for (const type of ["pointerover", "pointerenter", "pointermove", "pointerdown", "pointerup"]) {
-      dispatchSyntheticInput(element, type);
-    }
-
-    for (const type of ["mouseover", "mouseenter", "mousemove", "mousedown", "mouseup", "click"]) {
-      dispatchSyntheticInput(element, type);
-    }
-  }
-
-  function dispatchSyntheticInput(element, type) {
-    const isPointer = type.startsWith("pointer");
-    const EventCtor = isPointer && typeof PointerEvent === "function" ? PointerEvent : MouseEvent;
-    const rect = element.getBoundingClientRect();
-    const clientX = rect.left + Math.max(1, Math.min(rect.width / 2 || 1, 12));
-    const clientY = rect.top + Math.max(1, Math.min(rect.height / 2 || 1, 12));
-    const isDown = type === "pointerdown" || type === "mousedown";
-    const isEnter = type === "mouseenter" || type === "pointerenter";
-    const init = {
-      bubbles: !isEnter,
-      cancelable: true,
-      clientX,
-      clientY,
-      screenX: window.screenX + clientX,
-      screenY: window.screenY + clientY,
-      view: window,
-      button: 0,
-      buttons: isDown ? 1 : 0
-    };
-
-    if (isPointer) {
-      init.pointerId = 1;
-      init.pointerType = "mouse";
-      init.isPrimary = true;
-    }
-
-    element.dispatchEvent(new EventCtor(type, init));
-  }
-
-  async function waitForRemoval(item, timeoutMs) {
-    return waitFor(() => {
-      const current = state.items.get(item.key);
-      if (!item.element.isConnected || !current || !current.element.isConnected) {
-        return true;
-      }
-      if (item.href && !hrefStillPresent(item.href)) {
-        return true;
-      }
-      return false;
-    }, timeoutMs);
-  }
-
-  function hrefStillPresent(href) {
-    return Array.from(document.querySelectorAll("a[href]")).some((anchor) => {
-      try {
-        return new URL(anchor.getAttribute("href"), window.location.href).href === href;
-      } catch (_error) {
-        return false;
-      }
-    });
   }
 
   function markDeleted(item) {

@@ -266,7 +266,7 @@ test("content script decorates Claude Web recents table rows", async () => {
   }
 });
 
-test("content script deletes selected Claude Web chats via visible menus", async () => {
+test("content script does not use visible menus for Claude Web chats without API ids", async () => {
   const instance = new JSDOM(`
     <body>
       <aside aria-label="Recents">
@@ -292,12 +292,14 @@ test("content script deletes selected Claude Web chats via visible menus", async
 
   try {
     const { document, MouseEvent } = instance.window;
+    let menuClicked = false;
     instance.window.confirm = () => true;
     instance.window.HTMLElement.prototype.scrollIntoView = function scrollIntoView() {};
 
     document.addEventListener("click", (event) => {
       const menuButton = event.target.closest("[data-menu-for]");
       if (menuButton) {
+        menuClicked = true;
         event.preventDefault();
         document.querySelector("[role='menu']")?.remove();
         const menu = document.createElement("div");
@@ -346,16 +348,22 @@ test("content script deletes selected Claude Web chats via visible menus", async
     selectors[2].dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, shiftKey: true }));
     document.querySelector("[data-cbd-action='delete']").dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
 
-    await waitFor(instance.window, () => document.querySelector(".cbd-status")?.textContent === "Deleted 3 chats.", 7000);
+    await waitFor(
+      instance.window,
+      () => document.querySelector(".cbd-status")?.textContent.includes("conversations API unavailable"),
+      7000
+    );
 
-    assert.equal(document.querySelectorAll("a[href^='/chat/']").length, 0);
-    assert.equal(document.querySelector(".cbd-panel [data-cbd-count]")?.textContent, "0 selected");
+    assert.equal(document.querySelector(".cbd-status")?.textContent.startsWith("Deleted 0. Failed 3:"), true);
+    assert.equal(document.querySelectorAll("a[href^='/chat/']").length, 3);
+    assert.equal(document.querySelector(".cbd-panel [data-cbd-count]")?.textContent, "3 selected");
+    assert.equal(menuClicked, false);
   } finally {
     instance.window.close();
   }
 });
 
-test("content script deletes selected Claude Web recents table rows via row menus", async () => {
+test("content script does not use visible menus for Claude Web recents rows without API ids", async () => {
   const instance = new JSDOM(`
     <body>
       <main>
@@ -391,12 +399,14 @@ test("content script deletes selected Claude Web recents table rows via row menu
 
   try {
     const { document, MouseEvent } = instance.window;
+    let menuClicked = false;
     instance.window.confirm = () => true;
     instance.window.HTMLElement.prototype.scrollIntoView = function scrollIntoView() {};
 
     document.addEventListener("click", (event) => {
       const menuButton = event.target.closest("[data-menu-for]");
       if (menuButton) {
+        menuClicked = true;
         event.preventDefault();
         document.querySelector("[role='menu']")?.remove();
         const menu = document.createElement("div");
@@ -445,16 +455,22 @@ test("content script deletes selected Claude Web recents table rows via row menu
     selectors[2].dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, shiftKey: true }));
     document.querySelector("[data-cbd-action='delete']").dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
 
-    await waitFor(instance.window, () => document.querySelector(".cbd-status")?.textContent === "Deleted 3 chats.", 7000);
+    await waitFor(
+      instance.window,
+      () => document.querySelector(".cbd-status")?.textContent.includes("conversations API unavailable"),
+      7000
+    );
 
-    assert.equal(document.querySelectorAll("[data-thread]").length, 0);
-    assert.equal(document.querySelector(".cbd-panel [data-cbd-count]")?.textContent, "0 selected");
+    assert.equal(document.querySelector(".cbd-status")?.textContent.startsWith("Deleted 0. Failed 3:"), true);
+    assert.equal(document.querySelectorAll("[data-thread]").length, 3);
+    assert.equal(document.querySelector(".cbd-panel [data-cbd-count]")?.textContent, "3 selected");
+    assert.equal(menuClicked, false);
   } finally {
     instance.window.close();
   }
 });
 
-test("content script deletes Web rows with dynamic sibling menus without clicking unrelated buttons", async () => {
+test("content script does not open dynamic sibling menus when Claude Web API ids are missing", async () => {
   const instance = new JSDOM(`
     <body>
       <aside aria-label="Sidebar">
@@ -476,6 +492,7 @@ test("content script deletes Web rows with dynamic sibling menus without clickin
 
   try {
     const { document, MouseEvent } = instance.window;
+    let menuClicked = false;
     instance.window.confirm = () => true;
     instance.window.HTMLElement.prototype.scrollIntoView = function scrollIntoView() {};
 
@@ -501,6 +518,7 @@ test("content script deletes Web rows with dynamic sibling menus without clickin
 
       const menuButton = event.target.closest("[data-menu-for]");
       if (menuButton) {
+        menuClicked = true;
         event.preventDefault();
         document.querySelector("[role='menu']")?.remove();
         const menu = document.createElement("div");
@@ -550,10 +568,16 @@ test("content script deletes Web rows with dynamic sibling menus without clickin
     selectors[1].dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, shiftKey: true }));
     document.querySelector("[data-cbd-action='delete']").dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
 
-    await waitFor(instance.window, () => document.querySelector(".cbd-status")?.textContent === "Deleted 2 chats.", 5000);
+    await waitFor(
+      instance.window,
+      () => document.querySelector(".cbd-status")?.textContent.includes("conversations API unavailable"),
+      5000
+    );
 
-    assert.equal(document.querySelectorAll("[data-thread]").length, 0);
+    assert.equal(document.querySelector(".cbd-status")?.textContent.startsWith("Deleted 0. Failed 2:"), true);
+    assert.equal(document.querySelectorAll("[data-thread]").length, 2);
     assert.equal(document.body.dataset.wrongClick, undefined);
+    assert.equal(menuClicked, false);
   } finally {
     instance.window.close();
   }
@@ -955,6 +979,59 @@ test("content script toggles Claude Code selectors when the row receives the che
   }
 });
 
+test("content script preserves Claude Code selections when synthetic row keys change", async () => {
+  const instance = new JSDOM(`
+    <body>
+      <aside aria-label="Sidebar">
+        <button>New session</button>
+        <section aria-label="Recents" data-recents>
+          <button data-session-row="first"><span>First synthetic key session</span></button>
+          <button data-session-row="second"><span>Second synthetic key session</span></button>
+          <button data-session-row="third"><span>Third synthetic key session</span></button>
+        </section>
+      </aside>
+    </body>
+  `, {
+    pretendToBeVisual: true,
+    runScripts: "dangerously",
+    url: "https://claude.ai/code"
+  });
+
+  try {
+    const { document, MouseEvent } = instance.window;
+    instance.window.eval(await loadScript("src/claude/core.js"));
+    instance.window.eval(await loadScript("src/claude/content.js"));
+    await startSelecting(instance.window);
+    await waitFor(instance.window, () => document.querySelectorAll(".cbd-selector").length === 3);
+
+    const rows = Array.from(document.querySelectorAll("[data-session-row]"));
+    rows[0].querySelector(".cbd-selector").dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
+    rows[1].querySelector(".cbd-selector").dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
+
+    assert.equal(document.querySelector(".cbd-panel [data-cbd-count]")?.textContent, "2 selected");
+    assert.deepEqual(
+      rows.map((row) => row.querySelector(".cbd-selector")?.getAttribute("aria-checked")),
+      ["true", "true", "false"]
+    );
+
+    const firstKey = rows[0].dataset.cbdKey;
+    const insertedControl = document.createElement("button");
+    insertedControl.type = "button";
+    insertedControl.textContent = "Filter";
+    document.querySelector("[data-recents]").insertBefore(insertedControl, rows[0]);
+
+    await waitFor(instance.window, () => rows[0].dataset.cbdKey !== firstKey);
+
+    assert.equal(document.querySelector(".cbd-panel [data-cbd-count]")?.textContent, "2 selected");
+    assert.deepEqual(
+      rows.map((row) => row.querySelector(".cbd-selector")?.getAttribute("aria-checked")),
+      ["true", "true", "false"]
+    );
+  } finally {
+    instance.window.close();
+  }
+});
+
 test("content script deletes fresh Claude Code rows when menus appear on hover", async () => {
   const instance = new JSDOM(`
     <body>
@@ -977,8 +1054,33 @@ test("content script deletes fresh Claude Code rows when menus appear on hover",
 
   try {
     const { document, MouseEvent } = instance.window;
+    const fetchCalls = [];
+    let menuClicked = false;
     instance.window.confirm = () => true;
     instance.window.HTMLElement.prototype.scrollIntoView = function scrollIntoView() {};
+    instance.window.fetch = async (url, init = {}) => {
+      fetchCalls.push({ init, url: String(url) });
+      if (String(url).startsWith("/v1/code/sessions?")) {
+        return {
+          json: async () => ({
+            data: [
+              { id: "cse_fresh1", title: "Bulk delete test code" },
+              { id: "cse_fresh2", title: "Bulk delete test code" },
+              { id: "cse_fresh3", title: "Bulk delete test code" }
+            ],
+            has_more: false
+          }),
+          ok: true,
+          status: 200
+        };
+      }
+
+      if (init.method === "DELETE") {
+        return { ok: true, status: 204 };
+      }
+
+      return { ok: false, status: 500 };
+    };
 
     document.addEventListener("mouseover", (event) => {
       const row = event.target.closest("[data-session-row]");
@@ -997,6 +1099,7 @@ test("content script deletes fresh Claude Code rows when menus appear on hover",
     document.addEventListener("click", (event) => {
       const menuButton = event.target.closest("[data-menu-for]");
       if (menuButton) {
+        menuClicked = true;
         event.preventDefault();
         document.querySelector("[role='menu']")?.remove();
         const menu = document.createElement("div");
@@ -1050,6 +1153,17 @@ test("content script deletes fresh Claude Code rows when menus appear on hover",
 
     assert.equal(document.querySelectorAll("[data-session-row]").length, 0);
     assert.equal(document.querySelector(".cbd-panel [data-cbd-count]")?.textContent, "0 selected");
+    assert.deepEqual(
+      fetchCalls
+        .filter((call) => call.init.method === "DELETE")
+        .map((call) => call.url),
+      [
+        "/v1/code/sessions/cse_fresh1",
+        "/v1/code/sessions/cse_fresh2",
+        "/v1/code/sessions/cse_fresh3"
+      ]
+    );
+    assert.equal(menuClicked, false);
   } finally {
     instance.window.close();
   }
@@ -1137,6 +1251,671 @@ test("content script deletes selected Claude Code sessions through the sessions 
     assert.equal(fetchCalls[1].init.headers["anthropic-client-feature"], "ccr");
     assert.deepEqual(rows.map((row) => row.isConnected), [true, false, false, false, true]);
     assert.equal(document.querySelector(".cbd-panel [data-cbd-count]")?.textContent, "0 selected");
+  } finally {
+    instance.window.close();
+  }
+});
+
+test("content script resolves visible Claude Code rows with metadata through the sessions API", async () => {
+  const targetTitle = "ip-172-31-2-133-eu-west-2-compute-internal-async-glacier";
+  const instance = new JSDOM(`
+    <body>
+      <aside aria-label="Sidebar">
+        <button>New session</button>
+        <section aria-label="Recents">
+          <button data-session-row="target">
+            <span>${targetTitle}</span>
+            <span>Fable 5</span>
+            <span>High</span>
+          </button>
+          <button aria-label="More options for ${targetTitle}" data-menu-for="target">...</button>
+        </section>
+      </aside>
+    </body>
+  `, {
+    pretendToBeVisual: true,
+    runScripts: "dangerously",
+    url: "https://claude.ai/code"
+  });
+
+  try {
+    const { document, MouseEvent } = instance.window;
+    const fetchCalls = [];
+    let menuClicked = false;
+    instance.window.confirm = () => true;
+    instance.window.HTMLElement.prototype.scrollIntoView = function scrollIntoView() {};
+    document.addEventListener("click", (event) => {
+      if (event.target.closest("[data-menu-for]")) {
+        menuClicked = true;
+      }
+    });
+    instance.window.fetch = async (url, init = {}) => {
+      fetchCalls.push({ init, url: String(url) });
+      if (String(url).startsWith("/v1/code/sessions?")) {
+        return {
+          json: async () => ({
+            data: [
+              { id: "cse_asyncglacier", title: targetTitle }
+            ],
+            has_more: false
+          }),
+          ok: true,
+          status: 200
+        };
+      }
+
+      if (init.method === "DELETE") {
+        return { ok: true, status: 204 };
+      }
+
+      return { ok: false, status: 500 };
+    };
+
+    instance.window.eval(await loadScript("src/claude/core.js"));
+    instance.window.eval(await loadScript("src/claude/content.js"));
+    await startSelecting(instance.window);
+    await waitFor(instance.window, () => document.querySelectorAll(".cbd-selector").length === 1);
+
+    document.querySelector(".cbd-selector").dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
+    document.querySelector("[data-cbd-action='delete']").dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
+
+    await waitFor(instance.window, () => document.querySelector(".cbd-status")?.textContent === "Deleted 1 chat.", 5000);
+
+    assert.deepEqual(
+      fetchCalls
+        .filter((call) => call.init.method === "DELETE")
+        .map((call) => call.url),
+      ["/v1/code/sessions/cse_asyncglacier"]
+    );
+    assert.equal(menuClicked, false);
+  } finally {
+    instance.window.close();
+  }
+});
+
+test("content script resolves visible Claude Code rows whose labels start with status icons", async () => {
+  const targetTitle = "ip-172-31-2-133-eu-west-2-compute-internal-smooth-wadler";
+  const instance = new JSDOM(`
+    <body>
+      <aside aria-label="Sidebar">
+        <button>New session</button>
+        <section aria-label="Recents">
+          <button data-session-row="target"><span>&#xE008;${targetTitle}</span></button>
+          <button aria-label="More options for ${targetTitle}" data-menu-for="target">...</button>
+        </section>
+      </aside>
+    </body>
+  `, {
+    pretendToBeVisual: true,
+    runScripts: "dangerously",
+    url: "https://claude.ai/code"
+  });
+
+  try {
+    const { document, MouseEvent } = instance.window;
+    const fetchCalls = [];
+    let menuClicked = false;
+    instance.window.confirm = () => true;
+    instance.window.HTMLElement.prototype.scrollIntoView = function scrollIntoView() {};
+    document.addEventListener("click", (event) => {
+      if (event.target.closest("[data-menu-for]")) {
+        menuClicked = true;
+      }
+    });
+    instance.window.fetch = async (url, init = {}) => {
+      fetchCalls.push({ init, url: String(url) });
+      if (String(url).startsWith("/v1/code/sessions?")) {
+        return {
+          json: async () => ({
+            data: [
+              { id: "cse_smoothwadler", title: targetTitle, status: "archived" }
+            ],
+            has_more: false
+          }),
+          ok: true,
+          status: 200
+        };
+      }
+
+      if (init.method === "DELETE") {
+        return { ok: true, status: 204 };
+      }
+
+      return { ok: false, status: 500 };
+    };
+
+    instance.window.eval(await loadScript("src/claude/core.js"));
+    instance.window.eval(await loadScript("src/claude/content.js"));
+    await startSelecting(instance.window);
+    await waitFor(instance.window, () => document.querySelectorAll(".cbd-selector").length === 1);
+
+    document.querySelector(".cbd-selector").dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
+    document.querySelector("[data-cbd-action='delete']").dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
+
+    await waitFor(instance.window, () => document.querySelector(".cbd-status")?.textContent === "Deleted 1 chat.", 5000);
+
+    assert.deepEqual(
+      fetchCalls
+        .filter((call) => call.init.method === "DELETE")
+        .map((call) => call.url),
+      ["/v1/code/sessions/cse_smoothwadler"]
+    );
+    assert.equal(fetchCalls.some((call) => call.url === "/v1/code/sessions?limit=100&status=all"), true);
+    assert.equal(menuClicked, false);
+  } finally {
+    instance.window.close();
+  }
+});
+
+test("content script does not fall back to Claude Code UI deletion after sessions API failure", async () => {
+  const targetTitle = "Programmatic only code session";
+  const instance = new JSDOM(`
+    <body>
+      <aside aria-label="Sidebar">
+        <button>New session</button>
+        <section aria-label="Recents">
+          <button data-session-row="target">${targetTitle}</button>
+          <button aria-label="More options for ${targetTitle}" data-menu-for="target">...</button>
+        </section>
+      </aside>
+    </body>
+  `, {
+    pretendToBeVisual: true,
+    runScripts: "dangerously",
+    url: "https://claude.ai/code"
+  });
+
+  try {
+    const { document, MouseEvent } = instance.window;
+    let menuClicked = false;
+    instance.window.confirm = () => true;
+    instance.window.HTMLElement.prototype.scrollIntoView = function scrollIntoView() {};
+    document.addEventListener("click", (event) => {
+      if (event.target.closest("[data-menu-for]")) {
+        menuClicked = true;
+      }
+    });
+    instance.window.fetch = async (url, init = {}) => {
+      if (String(url).startsWith("/v1/code/sessions?")) {
+        return {
+          json: async () => ({
+            data: [
+              { id: "cse_programmaticonly", title: targetTitle }
+            ],
+            has_more: false
+          }),
+          ok: true,
+          status: 200
+        };
+      }
+
+      if (init.method === "DELETE") {
+        return { ok: false, status: 500 };
+      }
+
+      return { ok: false, status: 500 };
+    };
+
+    instance.window.eval(await loadScript("src/claude/core.js"));
+    instance.window.eval(await loadScript("src/claude/content.js"));
+    await startSelecting(instance.window);
+    await waitFor(instance.window, () => document.querySelectorAll(".cbd-selector").length === 1);
+
+    document.querySelector(".cbd-selector").dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
+    document.querySelector("[data-cbd-action='delete']").dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
+
+    await waitFor(
+      instance.window,
+      () => document.querySelector(".cbd-status")?.textContent.includes("sessions API 500"),
+      7000
+    );
+
+    assert.equal(menuClicked, false);
+    assert.equal(document.querySelector("[data-session-row='target']").isConnected, true);
+  } finally {
+    instance.window.close();
+  }
+});
+
+test("content script selects and deletes Claude Code sessions by exact hash titles", async () => {
+  const targetTitles = [
+    "islam-macbook-pro-local-immutable-floyd",
+    "islam-macbook-pro-local-clever-thimble",
+    "islam-macbook-pro-local-fancy-simon"
+  ];
+  const hash = new URLSearchParams({
+    "cbd-action": "delete",
+    "cbd-select-titles": targetTitles.join("\n")
+  }).toString();
+  const instance = new JSDOM(`
+    <body>
+      <aside aria-label="Sidebar">
+        <button>New session</button>
+      </aside>
+    </body>
+  `, {
+    pretendToBeVisual: true,
+    runScripts: "dangerously",
+    url: `https://claude.ai/code#${hash}`
+  });
+
+  try {
+    const fetchCalls = [];
+    instance.window.confirm = () => true;
+    instance.window.fetch = async (url, init = {}) => {
+      fetchCalls.push({ init, url: String(url) });
+      if (String(url).startsWith("/v1/code/sessions?")) {
+        return {
+          json: async () => ({
+            data: [
+              { id: "cse_realBefore", title: "islam-macbook-pro-local-declarative-hopper" },
+              { id: "cse_target1", title: targetTitles[0] },
+              { id: "cse_target2", title: targetTitles[1], session_status: "archived" },
+              { id: "cse_target3", title: targetTitles[2] },
+              { id: "cse_realAfter", title: "islam-macbook-pro-local-fizzy-hare" }
+            ],
+            has_more: false
+          }),
+          ok: true,
+          status: 200
+        };
+      }
+
+      if (init.method === "DELETE") {
+        return { ok: true, status: 204 };
+      }
+
+      return { ok: false, status: 500 };
+    };
+
+    instance.window.eval(await loadScript("src/claude/core.js"));
+    instance.window.eval(await loadScript("src/claude/content.js"));
+
+    await waitFor(instance.window, () => instance.window.document.querySelector(".cbd-status")?.textContent === "Deleted 3 chats.", 5000);
+
+    assert.deepEqual(
+      fetchCalls
+        .filter((call) => call.init.method === "DELETE")
+        .map((call) => call.url),
+      [
+        "/v1/code/sessions/cse_target1",
+        "/v1/code/sessions/cse_target2",
+        "/v1/code/sessions/cse_target3"
+      ]
+    );
+    assert.equal(fetchCalls.filter((call) => call.url.startsWith("/v1/code/sessions?")).length, 1);
+    assert.equal(instance.window.document.querySelector(".cbd-panel [data-cbd-count]")?.textContent, "0 selected");
+  } finally {
+    instance.window.close();
+  }
+});
+
+test("content script consumes one-time confirmation token for exact hash Claude Code deletion", async () => {
+  const targetTitles = [
+    "islam-macbook-pro-local-immutable-floyd",
+    "islam-macbook-pro-local-clever-thimble"
+  ];
+  const hash = new URLSearchParams({
+    "cbd-action": "delete",
+    "cbd-select-titles": targetTitles.join("\n")
+  }).toString();
+  const instance = new JSDOM(`
+    <body>
+      <aside aria-label="Sidebar">
+        <button>New session</button>
+      </aside>
+    </body>
+  `, {
+    pretendToBeVisual: true,
+    runScripts: "dangerously",
+    url: `https://claude.ai/code#${hash}`
+  });
+
+  try {
+    const fetchCalls = [];
+    let confirmCalled = false;
+    instance.window.sessionStorage.setItem("cbd-confirm-delete-once", JSON.stringify({
+      count: targetTitles.length,
+      titles: targetTitles
+    }));
+    instance.window.confirm = () => {
+      confirmCalled = true;
+      return false;
+    };
+    instance.window.fetch = async (url, init = {}) => {
+      fetchCalls.push({ init, url: String(url) });
+      if (String(url).startsWith("/v1/code/sessions?")) {
+        return {
+          json: async () => ({
+            data: [
+              { id: "cse_target1", title: targetTitles[0] },
+              { id: "cse_target2", title: targetTitles[1] },
+              { id: "cse_keep", title: "islam-macbook-pro-local-fizzy-hare" }
+            ],
+            has_more: false
+          }),
+          ok: true,
+          status: 200
+        };
+      }
+
+      if (init.method === "DELETE") {
+        return { ok: true, status: 204 };
+      }
+
+      return { ok: false, status: 500 };
+    };
+
+    instance.window.eval(await loadScript("src/claude/core.js"));
+    instance.window.eval(await loadScript("src/claude/content.js"));
+
+    await waitFor(instance.window, () => instance.window.document.querySelector(".cbd-status")?.textContent === "Deleted 2 chats.", 5000);
+
+    assert.equal(confirmCalled, false);
+    assert.equal(instance.window.sessionStorage.getItem("cbd-confirm-delete-once"), null);
+    assert.deepEqual(
+      fetchCalls
+        .filter((call) => call.init.method === "DELETE")
+        .map((call) => call.url),
+      [
+        "/v1/code/sessions/cse_target1",
+        "/v1/code/sessions/cse_target2"
+      ]
+    );
+  } finally {
+    instance.window.close();
+  }
+});
+
+test("content script falls back to Claude Code local session bridge after sessions API rejection", async () => {
+  const targetTitles = [
+    "islam-macbook-pro-local-immutable-floyd",
+    "islam-macbook-pro-local-clever-thimble"
+  ];
+  const hash = new URLSearchParams({
+    "cbd-action": "delete",
+    "cbd-select-titles": targetTitles.join("\n")
+  }).toString();
+  const instance = new JSDOM(`
+    <body>
+      <aside aria-label="Sidebar">
+        <button>New session</button>
+      </aside>
+    </body>
+  `, {
+    pretendToBeVisual: true,
+    runScripts: "dangerously",
+    url: `https://claude.ai/code#${hash}`
+  });
+
+  try {
+    const fetchCalls = [];
+    const localDeleteCalls = [];
+    instance.window.confirm = () => true;
+    instance.window["claude.web"] = {
+      LocalSessions: {
+        delete: async (sessionId) => {
+          localDeleteCalls.push(sessionId);
+        }
+      }
+    };
+    instance.window.fetch = async (url, init = {}) => {
+      fetchCalls.push({ init, url: String(url) });
+      if (String(url).startsWith("/v1/code/sessions?")) {
+        return {
+          json: async () => ({
+            data: [
+              { id: "session_keep", title: "islam-macbook-pro-local-declarative-hopper" },
+              { id: "session_local1", title: targetTitles[0] },
+              { id: "session_local2", title: targetTitles[1] }
+            ],
+            has_more: false
+          }),
+          ok: true,
+          status: 200
+        };
+      }
+
+      if (init.method === "DELETE") {
+        return { ok: false, status: 404 };
+      }
+
+      return { ok: false, status: 500 };
+    };
+
+    instance.window.eval(await loadScript("src/claude/core.js"));
+    instance.window.eval(await loadScript("src/claude/content.js"));
+
+    await waitFor(instance.window, () => instance.window.document.querySelector(".cbd-status")?.textContent === "Deleted 2 chats.", 5000);
+
+    assert.deepEqual(
+      fetchCalls
+        .filter((call) => call.init.method === "DELETE")
+        .map((call) => call.url),
+      [
+        "/v1/code/sessions/session_local1",
+        "/v1/code/sessions/session_local2"
+      ]
+    );
+    assert.deepEqual(localDeleteCalls, ["session_local1", "session_local2"]);
+  } finally {
+    instance.window.close();
+  }
+});
+
+test("content script uses the Claude Code page-world local session bridge when isolated direct access is unavailable", async () => {
+  const targetTitles = [
+    "islam-macbook-pro-local-immutable-floyd",
+    "islam-macbook-pro-local-clever-thimble"
+  ];
+  const hash = new URLSearchParams({
+    "cbd-action": "delete",
+    "cbd-select-titles": targetTitles.join("\n")
+  }).toString();
+  const instance = new JSDOM(`
+    <body>
+      <aside aria-label="Sidebar">
+        <button>New session</button>
+      </aside>
+    </body>
+  `, {
+    pretendToBeVisual: true,
+    runScripts: "dangerously",
+    url: `https://claude.ai/code#${hash}`
+  });
+
+  try {
+    const fetchCalls = [];
+    const localDeleteCalls = [];
+    instance.window.confirm = () => true;
+    instance.window["claude.web"] = {
+      LocalSessions: {
+        delete: async (sessionId) => {
+          localDeleteCalls.push(sessionId);
+        }
+      }
+    };
+    instance.window.wrappedJSObject = {};
+    instance.window.fetch = async (url, init = {}) => {
+      fetchCalls.push({ init, url: String(url) });
+      if (String(url).startsWith("/v1/code/sessions?")) {
+        return {
+          json: async () => ({
+            data: [
+              { id: "session_keep", title: "islam-macbook-pro-local-declarative-hopper" },
+              { id: "session_page1", title: targetTitles[0] },
+              { id: "session_page2", title: targetTitles[1] }
+            ],
+            has_more: false
+          }),
+          ok: true,
+          status: 200
+        };
+      }
+
+      if (init.method === "DELETE") {
+        return { ok: false, status: 404 };
+      }
+
+      return { ok: false, status: 500 };
+    };
+
+    instance.window.eval(await loadScript("src/claude/page-bridge.js"));
+    instance.window.eval(await loadScript("src/claude/core.js"));
+    instance.window.eval(await loadScript("src/claude/content.js"));
+
+    await waitFor(instance.window, () => instance.window.document.querySelector(".cbd-status")?.textContent === "Deleted 2 chats.", 5000);
+
+    assert.equal(instance.window.document.documentElement.dataset.cbdClaudeCodeLocalBridge, "ready");
+    assert.deepEqual(
+      fetchCalls
+        .filter((call) => call.init.method === "DELETE")
+        .map((call) => call.url),
+      [
+        "/v1/code/sessions/session_page1",
+        "/v1/code/sessions/session_page2"
+      ]
+    );
+    assert.deepEqual(localDeleteCalls, ["session_page1", "session_page2"]);
+  } finally {
+    instance.window.close();
+  }
+});
+
+test("Claude Code page bridge does not report ready until LocalSessions delete is available", async () => {
+  const instance = new JSDOM("<body></body>", {
+    pretendToBeVisual: true,
+    runScripts: "dangerously",
+    url: "https://claude.ai/code"
+  });
+
+  try {
+    instance.window.eval(await loadScript("src/claude/page-bridge.js"));
+
+    assert.notEqual(instance.window.document.documentElement.dataset.cbdClaudeCodeLocalBridge, "ready");
+    await waitFor(
+      instance.window,
+      () => instance.window.document.documentElement.dataset.cbdClaudeCodeLocalBridge === "unavailable",
+      3500
+    );
+  } finally {
+    instance.window.close();
+  }
+});
+
+test("content script skips Claude Code page bridge events after the bridge reports unavailable", async () => {
+  const targetTitle = "ip-172-31-2-133-eu-west-2-compute-internal-async-glacier";
+  const hash = new URLSearchParams({
+    "cbd-action": "delete",
+    "cbd-select-titles": targetTitle
+  }).toString();
+  const instance = new JSDOM(`
+    <body>
+      <aside aria-label="Sidebar">
+        <button>New session</button>
+      </aside>
+    </body>
+  `, {
+    pretendToBeVisual: true,
+    runScripts: "dangerously",
+    url: `https://claude.ai/code#${hash}`
+  });
+
+  try {
+    let bridgeEventCalls = 0;
+    instance.window.document.documentElement.dataset.cbdClaudeCodeLocalBridge = "unavailable";
+    instance.window.document.addEventListener("cbd:claude-code-local-delete", () => {
+      bridgeEventCalls += 1;
+    });
+    instance.window.sessionStorage.setItem("cbd-confirm-delete-once", JSON.stringify({
+      count: 1,
+      titles: [targetTitle]
+    }));
+    instance.window.confirm = () => true;
+    instance.window.fetch = async (url, init = {}) => {
+      if (String(url).startsWith("/v1/code/sessions?")) {
+        return {
+          json: async () => ({
+            data: [
+              { id: "cse_asyncglacier", title: targetTitle }
+            ],
+            has_more: false
+          }),
+          ok: true,
+          status: 200
+        };
+      }
+
+      if (init.method === "DELETE") {
+        return { ok: false, status: 404 };
+      }
+
+      return { ok: false, status: 500 };
+    };
+
+    instance.window.eval(await loadScript("src/claude/core.js"));
+    instance.window.eval(await loadScript("src/claude/content.js"));
+
+    await waitFor(
+      instance.window,
+      () => instance.window.document.querySelector(".cbd-status")?.textContent.includes("local sessions bridge unavailable"),
+      1000
+    );
+    assert.equal(bridgeEventCalls, 0);
+  } finally {
+    instance.window.close();
+  }
+});
+
+test("content script does not treat missing Claude Code sessions API rows as deleted", async () => {
+  const hash = new URLSearchParams({
+    "cbd-action": "delete",
+    "cbd-select-titles": "Missing local bridge target"
+  }).toString();
+  const instance = new JSDOM(`
+    <body>
+      <aside aria-label="Sidebar">
+        <button>New session</button>
+      </aside>
+    </body>
+  `, {
+    pretendToBeVisual: true,
+    runScripts: "dangerously",
+    url: `https://claude.ai/code#${hash}`
+  });
+
+  try {
+    instance.window.confirm = () => true;
+    instance.window.fetch = async (url, init = {}) => {
+      if (String(url).startsWith("/v1/code/sessions?")) {
+        return {
+          json: async () => ({
+            data: [
+              { id: "session_missing", title: "Missing local bridge target" }
+            ],
+            has_more: false
+          }),
+          ok: true,
+          status: 200
+        };
+      }
+
+      if (init.method === "DELETE") {
+        return { ok: false, status: 404 };
+      }
+
+      return { ok: false, status: 500 };
+    };
+
+    instance.window.eval(await loadScript("src/claude/core.js"));
+    instance.window.eval(await loadScript("src/claude/content.js"));
+
+    await waitFor(
+      instance.window,
+      () => instance.window.document.querySelector(".cbd-status")?.textContent.startsWith("Deleted 0. Failed 1:"),
+      5000
+    );
+    assert.notEqual(instance.window.document.querySelector(".cbd-status")?.textContent, "Deleted 1 chat.");
   } finally {
     instance.window.close();
   }
@@ -1234,7 +2013,7 @@ test("content script keeps Claude Code selectors scoped to the sidebar inside la
   }
 });
 
-test("content script deletes selected Claude Code sessions via paired menu buttons", async () => {
+test("content script deletes selected Claude Code sessions without paired menu buttons", async () => {
   const instance = new JSDOM(`
     <body>
       <aside aria-label="Recents">
@@ -1254,12 +2033,38 @@ test("content script deletes selected Claude Code sessions via paired menu butto
 
   try {
     const { document, MouseEvent } = instance.window;
+    const fetchCalls = [];
+    let menuClicked = false;
     instance.window.confirm = () => true;
     instance.window.HTMLElement.prototype.scrollIntoView = function scrollIntoView() {};
+    instance.window.fetch = async (url, init = {}) => {
+      fetchCalls.push({ init, url: String(url) });
+      if (String(url).startsWith("/v1/code/sessions?")) {
+        return {
+          json: async () => ({
+            data: [
+              { id: "cse_disposable1", title: "First disposable code session" },
+              { id: "cse_disposable2", title: "Second disposable code session" },
+              { id: "cse_disposable3", title: "Third disposable code session" }
+            ],
+            has_more: false
+          }),
+          ok: true,
+          status: 200
+        };
+      }
+
+      if (init.method === "DELETE") {
+        return { ok: true, status: 204 };
+      }
+
+      return { ok: false, status: 500 };
+    };
 
     document.addEventListener("click", (event) => {
       const menuButton = event.target.closest("[data-menu-for]");
       if (menuButton) {
+        menuClicked = true;
         event.preventDefault();
         document.querySelector("[role='menu']")?.remove();
         const menu = document.createElement("div");
@@ -1314,12 +2119,23 @@ test("content script deletes selected Claude Code sessions via paired menu butto
     assert.equal(document.querySelectorAll("[data-session-row]").length, 0);
     assert.equal(document.querySelectorAll("[data-menu-for]").length, 0);
     assert.equal(document.querySelector(".cbd-panel [data-cbd-count]")?.textContent, "0 selected");
+    assert.deepEqual(
+      fetchCalls
+        .filter((call) => call.init.method === "DELETE")
+        .map((call) => call.url),
+      [
+        "/v1/code/sessions/cse_disposable1",
+        "/v1/code/sessions/cse_disposable2",
+        "/v1/code/sessions/cse_disposable3"
+      ]
+    );
+    assert.equal(menuClicked, false);
   } finally {
     instance.window.close();
   }
 });
 
-test("content script activates Claude Code menu items that require pointer events", async () => {
+test("content script avoids Claude Code pointer-event menu deletion when API deletion is available", async () => {
   const instance = new JSDOM(`
     <body>
       <aside aria-label="Recents">
@@ -1335,13 +2151,38 @@ test("content script activates Claude Code menu items that require pointer event
 
   try {
     const { document, MouseEvent } = instance.window;
+    const fetchCalls = [];
+    let menuClicked = false;
+    let pointerMenuUsed = false;
     instance.window.confirm = () => true;
     instance.window.HTMLElement.prototype.scrollIntoView = function scrollIntoView() {};
     instance.window.PointerEvent = class PointerEvent extends MouseEvent {};
+    instance.window.fetch = async (url, init = {}) => {
+      fetchCalls.push({ init, url: String(url) });
+      if (String(url).startsWith("/v1/code/sessions?")) {
+        return {
+          json: async () => ({
+            data: [
+              { id: "cse_pointer", title: "Bulk delete test code" }
+            ],
+            has_more: false
+          }),
+          ok: true,
+          status: 200
+        };
+      }
+
+      if (init.method === "DELETE") {
+        return { ok: true, status: 204 };
+      }
+
+      return { ok: false, status: 500 };
+    };
 
     document.addEventListener("click", (event) => {
       const menuButton = event.target.closest("[data-menu-for]");
       if (menuButton) {
+        menuClicked = true;
         event.preventDefault();
         document.querySelector("[role='menu']")?.remove();
         const menu = document.createElement("div");
@@ -1370,6 +2211,7 @@ test("content script activates Claude Code menu items that require pointer event
       if (!deleteItem || event.constructor.name !== "PointerEvent") {
         return;
       }
+      pointerMenuUsed = true;
 
       document.querySelector("[role='dialog']")?.remove();
       const dialog = document.createElement("div");
@@ -1395,6 +2237,14 @@ test("content script activates Claude Code menu items that require pointer event
 
     assert.equal(document.querySelectorAll("[data-session-row]").length, 0);
     assert.equal(document.querySelectorAll("[data-menu-for]").length, 0);
+    assert.deepEqual(
+      fetchCalls
+        .filter((call) => call.init.method === "DELETE")
+        .map((call) => call.url),
+      ["/v1/code/sessions/cse_pointer"]
+    );
+    assert.equal(menuClicked, false);
+    assert.equal(pointerMenuUsed, false);
   } finally {
     instance.window.close();
   }

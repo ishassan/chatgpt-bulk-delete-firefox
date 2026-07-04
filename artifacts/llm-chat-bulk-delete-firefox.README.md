@@ -1,4 +1,4 @@
-# AI Chat Bulk Delete for Firefox
+# LLM Chat Bulk Delete for Firefox
 
 This artifact contains the combined Firefox extension for ChatGPT, Claude Web, and Claude Code on web.
 

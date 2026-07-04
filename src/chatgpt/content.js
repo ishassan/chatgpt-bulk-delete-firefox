@@ -485,7 +485,6 @@
 
     let deleted = 0;
     let deletedCurrentChat = false;
-    const apiFailures = [];
     const failed = [];
     const currentId = getConversationId(window.location.href);
     const apiConcurrency = Math.min(API_DELETE_CONCURRENCY, items.length);
@@ -504,36 +503,17 @@
     let apiFinished = 0;
     setStatus(`Fast deleting 0/${items.length} with ${apiConcurrency} parallel request${apiConcurrency === 1 ? "" : "s"}...`);
 
-    await runWithConcurrency(items, apiConcurrency, async (item, index) => {
+    await runWithConcurrency(items, apiConcurrency, async (item) => {
       try {
         await deleteViaApi(item.id);
         markDeleted(item);
       } catch (error) {
-        apiFailures.push({ item, error, index });
+        failed.push({ item, error });
       }
 
       apiFinished += 1;
-      setStatus(`Fast deleting ${apiFinished}/${items.length}; ${apiFailures.length} queued for UI retry.`);
+      setStatus(`Fast deleting ${apiFinished}/${items.length}; ${failed.length} failed.`);
     });
-
-    apiFailures.sort((first, second) => first.index - second.index);
-
-    for (let index = 0; index < apiFailures.length; index += 1) {
-      const { item, error: apiError } = apiFailures[index];
-      setStatus(`Retrying through UI ${index + 1}/${apiFailures.length}: ${truncate(item.title, 54)}`);
-
-      try {
-        await deleteViaVisibleUi(item.id);
-        markDeleted(item);
-      } catch (uiError) {
-        failed.push({
-          item,
-          error: new Error(`API ${apiError.message}; UI ${uiError.message}`)
-        });
-      }
-
-      await sleep(150);
-    }
 
     state.deleting = false;
     updatePanel();
@@ -640,32 +620,6 @@
     return null;
   }
 
-  async function deleteViaVisibleUi(id) {
-    const link = findChatLinks().find((candidate) => getConversationId(candidate) === id);
-    if (!link) {
-      throw new Error("fallback needs the chat to be visible");
-    }
-
-    const row = getChatRow(link);
-    row.scrollIntoView({ block: "center", inline: "nearest" });
-    emitHover(row);
-    await sleep(180);
-
-    const menuButton = findMenuButton(row, link);
-    if (!menuButton) {
-      throw new Error("menu button not found");
-    }
-
-    clickElement(menuButton);
-
-    const deleteItem = await waitFor(() => findDeleteMenuItem(), 2600);
-    clickElement(deleteItem);
-
-    const confirmButton = await waitFor(() => findConfirmDeleteButton(), 3200);
-    clickElement(confirmButton);
-    await sleep(450);
-  }
-
   function getChatRow(link) {
     return (
       link.closest("li") ||
@@ -674,109 +628,6 @@
       link.parentElement ||
       link
     );
-  }
-
-  function findMenuButton(row, link) {
-    const roots = uniqueElements([
-      row,
-      link.parentElement,
-      link.parentElement?.parentElement,
-      link.parentElement?.parentElement?.parentElement
-    ]).filter(Boolean);
-
-    for (const root of roots) {
-      const buttons = Array.from(root.querySelectorAll('button,[role="button"]'))
-        .filter(isUsablePageControl);
-      const labeled = buttons.find((button) => {
-        const text = normalizeText(button.getAttribute("aria-label") || button.getAttribute("title") || button.textContent);
-        return /options|more|menu|actions/i.test(text);
-      });
-
-      if (labeled) {
-        return labeled;
-      }
-
-      if (buttons.length > 0) {
-        return buttons[buttons.length - 1];
-      }
-    }
-
-    const linkRect = link.getBoundingClientRect();
-    return Array.from(document.querySelectorAll('button,[role="button"]'))
-      .filter(isUsablePageControl)
-      .filter((button) => {
-        const rect = button.getBoundingClientRect();
-        const verticallyAligned = rect.top < linkRect.bottom + 10 && rect.bottom > linkRect.top - 10;
-        const closeToLink = rect.left > linkRect.left && rect.left < linkRect.right + 100;
-        return verticallyAligned && closeToLink;
-      })
-      .sort((a, b) => b.getBoundingClientRect().left - a.getBoundingClientRect().left)[0] || null;
-  }
-
-  function findDeleteMenuItem() {
-    const candidates = Array.from(document.querySelectorAll('button,[role="button"],[role="menuitem"]'))
-      .filter(isUsablePageControl)
-      .filter((element) => /delete/i.test(normalizeText(element.textContent || element.getAttribute("aria-label") || "")));
-
-    return candidates.find((element) => /^delete(?: chat)?$/i.test(normalizeText(element.textContent))) || candidates[0] || null;
-  }
-
-  function findConfirmDeleteButton() {
-    const dialogs = Array.from(document.querySelectorAll('[role="dialog"],[aria-modal="true"]'))
-      .filter(isElementVisible);
-    const roots = dialogs.length > 0 ? dialogs : [document.body];
-
-    for (const root of roots) {
-      const buttons = Array.from(root.querySelectorAll('button,[role="button"]'))
-        .filter(isUsablePageControl)
-        .filter((button) => /^delete(?: chat)?$/i.test(normalizeText(button.textContent || button.getAttribute("aria-label") || "")));
-
-      if (buttons.length > 0) {
-        return buttons[buttons.length - 1];
-      }
-    }
-
-    return null;
-  }
-
-  function isUsablePageControl(element) {
-    return !element.closest(`.${EXT}-panel`) &&
-      !element.classList.contains(`${EXT}-selector`) &&
-      isElementVisible(element);
-  }
-
-  function isElementVisible(element) {
-    if (!element || !(element instanceof Element)) {
-      return false;
-    }
-
-    const rect = element.getBoundingClientRect();
-    if (rect.width <= 0 || rect.height <= 0) {
-      return false;
-    }
-
-    const style = window.getComputedStyle(element);
-    return style.display !== "none" && style.visibility !== "hidden" && Number(style.opacity || "1") !== 0;
-  }
-
-  function emitHover(element) {
-    for (const type of ["pointerover", "mouseover", "mouseenter"]) {
-      element.dispatchEvent(new MouseEvent(type, {
-        bubbles: true,
-        cancelable: true,
-        view: window
-      }));
-    }
-  }
-
-  function clickElement(element) {
-    for (const type of ["pointerdown", "mousedown", "pointerup", "mouseup", "click"]) {
-      element.dispatchEvent(new MouseEvent(type, {
-        bubbles: true,
-        cancelable: true,
-        view: window
-      }));
-    }
   }
 
   async function runWithConcurrency(items, concurrency, task) {
@@ -791,19 +642,6 @@
     });
 
     await Promise.all(workers);
-  }
-
-  async function waitFor(callback, timeoutMs) {
-    const startedAt = Date.now();
-    while (Date.now() - startedAt < timeoutMs) {
-      const result = callback();
-      if (result) {
-        return result;
-      }
-      await sleep(80);
-    }
-
-    throw new Error("timed out");
   }
 
   function markConversationDeleted(id) {
@@ -841,14 +679,6 @@
     }
 
     return `${text.slice(0, Math.max(0, maxLength - 1))}...`;
-  }
-
-  function sleep(ms) {
-    return new Promise((resolve) => window.setTimeout(resolve, ms));
-  }
-
-  function uniqueElements(elements) {
-    return Array.from(new Set(elements.filter(Boolean)));
   }
 
   boot();

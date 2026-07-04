@@ -237,40 +237,8 @@
     return /\b(more|options|actions|menu)\b/.test(label) || label === "..." || label === "···";
   }
 
-  function interactiveCandidates(root) {
-    return queryAll(root, [
-      "button",
-      "[role='button']",
-      "[role='menuitem']",
-      "[aria-label]",
-      "[title]"
-    ].join(","));
-  }
-
-  function findDeleteAction(root) {
-    return interactiveCandidates(root).find(isDeleteAction) || null;
-  }
-
-  function findConfirmDeleteButton(root) {
-    const scopes = queryAll(root, "dialog, [role='dialog'], [role='alertdialog'], [data-radix-portal]")
-      .filter(isVisible);
-    for (const scope of scopes) {
-      const button = findDeleteAction(scope);
-      if (button) return button;
-    }
-    return findDeleteAction(root);
-  }
-
-  function findRowActionButton(row) {
-    const candidates = interactiveCandidates(row).filter((element) => element !== row);
-    return candidates.find(isDeleteAction) || candidates.find(isMenuAction) || null;
-  }
-
   return {
     collectConversationItems,
-    findConfirmDeleteButton,
-    findDeleteAction,
-    findRowActionButton,
     isCodeContext,
     isDeleteAction,
     isExtensionElement,

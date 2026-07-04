@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
-  "name": "AI Chat Bulk Delete",
-  "version": "0.3.0",
+  "name": "LLM Chat Bulk Delete",
+  "version": "0.3.2",
   "description": "Select multiple ChatGPT, Claude Web, and Claude Code chats and delete them in one confirmed bulk action.",
   "host_permissions": [
     "https://chatgpt.com/*",
@@ -21,6 +21,16 @@
         "src/chatgpt/content.css"
       ],
       "run_at": "document_idle"
+    },
+    {
+      "matches": [
+        "https://claude.ai/*"
+      ],
+      "js": [
+        "src/claude/page-bridge.js"
+      ],
+      "run_at": "document_idle",
+      "world": "MAIN"
     },
     {
       "matches": [
