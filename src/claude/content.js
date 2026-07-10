@@ -206,7 +206,7 @@
     const currentElements = new Set();
     const nextItems = new Map();
 
-    alignWebSidebarSelectors(items);
+    alignSidebarSelectors(items);
 
     for (const item of items) {
       currentElements.add(item.element);
@@ -250,6 +250,15 @@
         items.push(item);
       }
 
+      for (const item of collectCodeMenuLabeledItems(seenElements)) {
+        if (seenKeys.has(item.key)) {
+          continue;
+        }
+        seenElements.add(item.element);
+        seenKeys.add(item.key);
+        items.push(item);
+      }
+
       for (const item of collectCodePlainSessionRows(seenElements)) {
         if (seenKeys.has(item.key)) {
           continue;
@@ -270,6 +279,153 @@
     }
 
     return items;
+  }
+
+  function collectCodeMenuLabeledItems(existingElements) {
+    const items = [];
+    const seenRows = new Set(existingElements);
+
+    for (const root of findSidebarRoots()) {
+      const menuControls = Array.from(root.querySelectorAll("button,[role='button']"))
+        .filter(isUsablePageControl)
+        .filter((control) => isCodeMoreOptionsLabel(codeMenuControlLabel(control)));
+
+      for (const menuElement of menuControls) {
+        const title = codeSessionTitle(codeMenuControlLabel(menuElement).replace(/^more options for\s+/i, ""));
+        if (!isLikelyCodeMenuSessionTitle(title)) {
+          continue;
+        }
+
+        const row = findCodeRowForMenuButton(root, menuElement, title);
+        if (!row || elementOverlapsSet(row, seenRows) || Core.isExtensionElement(row) || !Core.isVisible(row)) {
+          continue;
+        }
+
+        seenRows.add(row);
+        items.push({
+          element: row,
+          href: "",
+          key: `claude-code:menu:${domPath(row)}:${title}`,
+          menuElement,
+          source: "claude-code",
+          title
+        });
+      }
+    }
+
+    return items;
+  }
+
+  function findCodeRowForMenuButton(root, menuElement, title) {
+    const normalizedTitle = normalizeComparableTitle(title);
+    const directAncestors = [
+      menuElement.parentElement,
+      menuElement.parentElement?.parentElement,
+      menuElement.parentElement?.parentElement?.parentElement
+    ];
+
+    for (const ancestor of directAncestors) {
+      const row = codeRowCandidateFromElement(ancestor, root, normalizedTitle, menuElement);
+      if (row) {
+        return row;
+      }
+    }
+
+    let sibling = menuElement.previousElementSibling;
+    while (sibling) {
+      const row = codeRowCandidateFromElement(sibling, root, normalizedTitle, menuElement);
+      if (row) {
+        return row;
+      }
+      sibling = sibling.previousElementSibling;
+    }
+
+    const candidates = Array.from(root.querySelectorAll("a[href],button,[role='button'],[role='link'],li,div,span,p"))
+      .filter((candidate) => candidate !== menuElement && !candidate.contains(menuElement))
+      .filter((candidate) => elementPrecedes(candidate, menuElement))
+      .reverse();
+
+    for (const candidate of candidates) {
+      const row = codeRowCandidateFromElement(candidate, root, normalizedTitle, menuElement);
+      if (row) {
+        return row;
+      }
+    }
+
+    return null;
+  }
+
+  function codeRowCandidateFromElement(element, root, normalizedTitle, menuElement) {
+    if (!element || element === root || Core.isExtensionElement(element) || !Core.isVisible(element)) {
+      return null;
+    }
+    if (Core.isMenuAction(element)) {
+      return null;
+    }
+    if (hasCodeSessionGroupHeaderDescendant(element)) {
+      return null;
+    }
+
+    const elementTitle = normalizeComparableTitle(Core.readableText(element));
+    if (elementTitle !== normalizedTitle) {
+      return null;
+    }
+
+    const titleElement = closestCodeTitleAncestor(element, root, normalizedTitle) || element;
+    const row = sidebarRowFor(titleElement, root) || titleElement;
+    if (!row || row === root || Core.isExtensionElement(row) || !Core.isVisible(row)) {
+      return null;
+    }
+    if (row !== titleElement) {
+      const rowTitle = normalizeComparableTitle(Core.readableText(row));
+      if (rowTitle !== normalizedTitle || hasCodeSessionGroupHeaderDescendant(row)) {
+        return titleElement;
+      }
+    }
+
+    return row;
+  }
+
+  function closestCodeTitleAncestor(element, root, normalizedTitle) {
+    let current = element;
+    let best = null;
+    while (current && current !== root && current !== document.body && !Core.isExtensionElement(current)) {
+      if (Core.isMenuAction(current)) {
+        break;
+      }
+      if (hasCodeSessionGroupHeaderDescendant(current)) {
+        break;
+      }
+
+      const title = normalizeComparableTitle(Core.readableText(current));
+      if (title === normalizedTitle) {
+        best = current;
+      } else if (best) {
+        break;
+      }
+
+      current = current.parentElement;
+    }
+
+    return best;
+  }
+
+  function hasCodeSessionGroupHeaderDescendant(element) {
+    for (const child of Array.from(element.querySelectorAll("div,span,p,h1,h2,h3,h4,h5,h6"))) {
+      if (child === element || Core.isExtensionElement(child)) {
+        continue;
+      }
+
+      if (isCodeSessionGroupHeader(Core.readableText(child))) {
+        return true;
+      }
+    }
+
+    return false;
+  }
+
+  function elementPrecedes(first, second) {
+    return Boolean(first.compareDocumentPosition(second) & Node.DOCUMENT_POSITION_FOLLOWING);
   }
 
   function isWebRecentsContext() {
@@ -503,6 +659,15 @@
       !/\binstall\s+dismiss\b/i.test(normalized);
   }
 
+  function isLikelyCodeMenuSessionTitle(title) {
+    const normalized = normalizeText(title);
+    if (/^new session$/i.test(comparablePlainText(normalized))) {
+      return true;
+    }
+
+    return isLikelyCodeSessionTitle(title);
+  }
+
   function isCodeSessionGroupHeader(title) {
     return /^(idle|running|ready|working|awaiting input|needs input|error|completed)$/i.test(Core.normalizeText(title));
   }
@@ -525,6 +690,21 @@
       element.getAttribute("title"),
       element.textContent
     ].filter(Boolean).join(" "));
+  }
+
+  function codeMenuControlLabel(element) {
+    if (!element) {
+      return "";
+    }
+
+    for (const value of [element.getAttribute("aria-label"), element.getAttribute("title")]) {
+      const label = normalizeText(value);
+      if (isCodeMoreOptionsLabel(label)) {
+        return label;
+      }
+    }
+
+    return controlLabel(element);
   }
 
   function normalizeComparableTitle(value) {
@@ -932,6 +1112,10 @@
       return false;
     }
 
+    if (item.source === "claude-code" && !isLikelyCodeSessionTitle(codeSessionTitle(item.title))) {
+      return false;
+    }
+
     const rect = element.getBoundingClientRect();
     if (rect.width > 0 && rect.height > 0) {
       const maxSidebarRight = Math.min(620, Math.max(300, window.innerWidth * 0.5));
@@ -1050,9 +1234,9 @@
     return row;
   }
 
-  function alignWebSidebarSelectors(items) {
+  function alignSidebarSelectors(items) {
     const layoutItems = items
-      .filter(usesWebSidebarSelectorLayout)
+      .filter(usesSidebarSelectorLayout)
       .map((item) => {
         const rect = item.element.getBoundingClientRect();
         return { item, rect };
@@ -1082,13 +1266,18 @@
     }
   }
 
-  function usesWebSidebarSelectorLayout(item) {
-    return item &&
-      item.source === "claude-web" &&
-      !isWebRecentsContext() &&
-      !item.selectorHost &&
-      !isTableLikeRow(item.element) &&
-      hasSidebarAncestor(item.element);
+  function usesSidebarSelectorLayout(item) {
+    if (
+      !item ||
+      !["claude-web", "claude-code"].includes(item.source) ||
+      item.selectorHost ||
+      isTableLikeRow(item.element) ||
+      !hasSidebarAncestor(item.element)
+    ) {
+      return false;
+    }
+
+    return item.source !== "claude-web" || !isWebRecentsContext();
   }
 
   function isTableLikeRow(element) {

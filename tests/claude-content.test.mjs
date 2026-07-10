@@ -810,6 +810,103 @@ test("content script skips Claude Code recents group headers", async () => {
   }
 });
 
+test("content script decorates Claude Code menu-labeled rows without decorating group wrappers", async () => {
+  const instance = new JSDOM(`
+    <body>
+      <aside aria-label="Sidebar">
+        <div data-top-controls="true">
+          <button type="button">New session</button>
+          <button type="button">Artifacts</button>
+          <button type="button">Routines</button>
+          <button type="button">Customize</button>
+        </div>
+        <section aria-label="Sessions">
+          <div data-group="needs-input" data-session-id="session_group">
+            <div>Needs input</div>
+            <div data-row="new-session" data-left="32">
+              <span aria-hidden="true">!</span>
+              <span>New session</span>
+            </div>
+          </div>
+          <button type="button" aria-label="More options for New session">...</button>
+          <div>Completed</div>
+          <div data-row="remove-plans" data-left="80">
+            <span aria-hidden="true">box</span>
+            <span>Remove all plans</span>
+          </div>
+          <button type="button" aria-label="More options for Remove all plans">...</button>
+          <div data-row="interrupted" data-left="80">
+            <span aria-hidden="true">box</span>
+            <span>User interrupted request for tool use</span>
+          </div>
+          <button type="button" aria-label="More options for User interrupted request for tool use">...</button>
+          <div data-row="usage" data-left="80">
+            <span>Claude Code usage tracking system</span>
+          </div>
+          <button type="button" aria-label="More options for Claude Code usage tracking system">...</button>
+          <div data-row="remove-dashes" data-left="80">
+            <span aria-hidden="true">box</span>
+            <span>Remove dashes from daily skill Slack formatting</span>
+          </div>
+          <button type="button" aria-label="More options for Remove dashes from daily skill Slack formatting">...</button>
+        </section>
+      </aside>
+    </body>
+  `, {
+    pretendToBeVisual: true,
+    runScripts: "dangerously",
+    url: "https://claude.ai/code"
+  });
+
+  try {
+    const { document, HTMLElement } = instance.window;
+    HTMLElement.prototype.getBoundingClientRect = function getBoundingClientRect() {
+      const left = Number(this.dataset.left || 0);
+      const width = left > 0 ? 720 : 820;
+      const height = left > 0 ? 40 : 240;
+      return {
+        bottom: height,
+        height,
+        left,
+        right: left + width,
+        top: 0,
+        width,
+        x: left,
+        y: 0
+      };
+    };
+
+    instance.window.eval(await loadScript("src/claude/core.js"));
+    instance.window.eval(await loadScript("src/claude/content.js"));
+    await startSelecting(instance.window);
+    await new Promise((resolve) => instance.window.setTimeout(resolve, 500));
+
+    const selectors = Array.from(document.querySelectorAll(".cbd-selector"));
+    assert.equal(selectors.length, 5);
+    assert.deepEqual(
+      selectors.map((selector) => selector.getAttribute("aria-label")),
+      [
+        "Select New session",
+        "Select Remove all plans",
+        "Select User interrupted request for tool use",
+        "Select Claude Code usage tracking system",
+        "Select Remove dashes from daily skill Slack formatting"
+      ]
+    );
+    assert.equal(document.querySelector("[data-top-controls] .cbd-selector"), null);
+    assert.equal(document.querySelector("[data-group='needs-input'] > .cbd-selector"), null);
+    const newSessionRow = document.querySelector("[data-row='new-session']");
+    assert.equal(newSessionRow?.querySelector(".cbd-selector")?.getAttribute("aria-label"), "Select New session");
+    assert.equal(newSessionRow?.dataset.cbdSidebarSelectorLayout, "true");
+    assert.equal(newSessionRow?.style.getPropertyValue("--cbd-selector-left"), "6px");
+    assert.equal(newSessionRow?.style.getPropertyValue("--cbd-selector-padding-left"), "42px");
+    assert.equal(document.querySelector("[data-row='remove-plans'] .cbd-selector")?.getAttribute("aria-label"), "Select Remove all plans");
+    assert.equal(document.querySelector("[data-row='remove-dashes'] .cbd-selector")?.getAttribute("aria-label"), "Select Remove dashes from daily skill Slack formatting");
+  } finally {
+    instance.window.close();
+  }
+});
+
 test("content script skips Claude Code pinned and drag-to-pin controls", async () => {
   const instance = new JSDOM(`
     <body>

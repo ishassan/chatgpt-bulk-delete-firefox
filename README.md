@@ -23,9 +23,9 @@ Temporary add-ons are removed when Firefox restarts. For permanent use in regula
 
 ## Notes
 
-- ChatGPT deletion calls ChatGPT's same-origin conversation endpoint from the active ChatGPT tab, using only your existing browser session. If that endpoint is unavailable for a chat, the extension falls back to the visible ChatGPT UI delete flow.
-- Claude Web chats are deleted through Claude's same-origin `/api/organizations/<org>/chat_conversations/<chat>` request path, with visible UI deletion as a fallback.
-- Claude Code sessions are deleted through Claude's same-origin `/v1/code/sessions` request path, with visible UI deletion as a fallback.
+- ChatGPT deletion calls ChatGPT's same-origin conversation endpoint from the active ChatGPT tab, using only your existing browser session. If the programmatic endpoint is unavailable, the extension reports the failure and leaves the chat selected.
+- Claude Web chats are deleted through Claude's same-origin `/api/organizations/<org>/chat_conversations/<chat>` request path. If the programmatic request fails, the extension reports the failure and leaves the chat selected.
+- Claude Code sessions are deleted through Claude's same-origin `/v1/code/sessions` request path. When a local session requires Claude Code's page bridge, the extension calls `claude.web.LocalSessions.delete(sessionId)` programmatically. It never opens row menus or confirmation dialogs as a deletion fallback.
 - The extension does not send data to any third-party server and does not use extension storage.
 - These sites can change their web UI and private endpoints. If selection or deletion stops working, the content script selectors or endpoint calls may need an update.
 
