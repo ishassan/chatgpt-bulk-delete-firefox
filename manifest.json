@@ -1,13 +1,22 @@
 {
   "manifest_version": 3,
   "name": "LLM Chat Bulk Delete",
-  "version": "0.3.2",
+  "version": "0.3.3",
   "description": "Select multiple ChatGPT, Claude Web, and Claude Code chats and delete them in one confirmed bulk action.",
   "host_permissions": [
     "https://chatgpt.com/*",
     "https://chat.openai.com/*",
     "https://claude.ai/*"
   ],
+  "permissions": [
+    "storage"
+  ],
+  "action": {
+    "default_area": "navbar",
+    "default_icon": "src/popup/icon.svg",
+    "default_popup": "src/popup/popup.html",
+    "default_title": "LLM Chat Bulk Delete"
+  },
   "content_scripts": [
     {
       "matches": [

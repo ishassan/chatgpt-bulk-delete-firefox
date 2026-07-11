@@ -13,6 +13,8 @@ Temporary add-ons are removed when Firefox restarts. For permanent use in regula
 
 ## Use
 
+Click the extension's toolbar button to turn the on-page bulk-delete controls on or off. The setting is saved locally and applies to ChatGPT, Claude Web, and Claude Code tabs. If the button is inside Firefox's Extensions menu, use the gear next to the extension and choose `Pin to Toolbar` for one-click access.
+
 ### ChatGPT, Claude Web, and Claude Code
 
 1. Click `Select chats` in the bottom-right panel.
@@ -36,3 +38,7 @@ Run the extension test coverage:
 ```sh
 npm test
 ```
+
+## Licence
+
+Licensed under the [Apache Licence 2.0](LICENSE). Redistributions and derivative works must preserve the attribution in [NOTICE](NOTICE), identifying Islam Hassan as the original author.

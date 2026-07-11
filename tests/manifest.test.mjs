@@ -7,6 +7,7 @@ const root = new URL("../", import.meta.url);
 test("manifest packages ChatGPT, Claude Web, and Claude Code support in one extension", async () => {
   const manifest = JSON.parse(await readFile(new URL("manifest.json", root), "utf8"));
   const hostPermissions = new Set(manifest.host_permissions);
+  const permissions = new Set(manifest.permissions || []);
   const contentScripts = manifest.content_scripts;
 
   assert.equal(manifest.manifest_version, 3);
@@ -14,6 +15,13 @@ test("manifest packages ChatGPT, Claude Web, and Claude Code support in one exte
   assert.equal(hostPermissions.has("https://chatgpt.com/*"), true);
   assert.equal(hostPermissions.has("https://chat.openai.com/*"), true);
   assert.equal(hostPermissions.has("https://claude.ai/*"), true);
+  assert.equal(permissions.has("storage"), true);
+  assert.deepEqual(manifest.action, {
+    default_area: "navbar",
+    default_icon: "src/popup/icon.svg",
+    default_popup: "src/popup/popup.html",
+    default_title: "LLM Chat Bulk Delete"
+  });
 
   assert.deepEqual(
     contentScripts.map((script) => script.matches),
@@ -34,6 +42,12 @@ test("manifest packages ChatGPT, Claude Web, and Claude Code support in one exte
     ...(script.js || []),
     ...(script.css || [])
   ]);
+  packagedFiles.push(
+    manifest.action.default_icon,
+    manifest.action.default_popup,
+    "src/popup/popup.css",
+    "src/popup/popup.js"
+  );
   await Promise.all(packagedFiles.map((path) => access(new URL(path, root))));
 });
 

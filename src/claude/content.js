@@ -31,11 +31,13 @@
   const CODE_LOCAL_BRIDGE_REQUEST_EVENT = "cbd:claude-code-local-delete";
   const CODE_LOCAL_BRIDGE_RESPONSE_EVENT = "cbd:claude-code-local-delete-result";
   const CODE_LOCAL_BRIDGE_TIMEOUT_MS = 2500;
+  const ENABLED_STORAGE_KEY = "extensionEnabled";
   const CODE_SESSION_ID_PATTERN = /\b(?:cse|session)_[A-Za-z0-9]+\b/;
   const UUID_PATTERN = /\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b/i;
 
   const state = {
     deleting: false,
+    enabled: true,
     items: new Map(),
     lastHashCommand: "",
     lastSelectedKey: null,
@@ -43,32 +45,88 @@
     observer: null,
     panel: null,
     refreshTimer: null,
+    runtimeStarted: false,
     selecting: false,
     selected: new Map(),
     status: ""
   };
   let codeLocalBridgeRequestId = 1;
 
-  function boot() {
-    if (!document.body) {
-      window.setTimeout(boot, 50);
+  function extensionApi() {
+    if (typeof browser === "object" && browser) return browser;
+    if (typeof chrome === "object" && chrome) return chrome;
+    return null;
+  }
+
+  function initializeExtensionState() {
+    const api = extensionApi();
+    api?.storage?.onChanged?.addListener(onExtensionStorageChanged);
+
+    if (!api?.storage?.local?.get) {
+      boot(true);
       return;
     }
 
-    cleanupLegacyUi();
-    cleanupLegacyAuditMarker();
-    ensurePanel();
-    state.observer = new MutationObserver(scheduleRefresh);
-    state.observer.observe(document.documentElement, {
-      attributes: true,
-      childList: true,
-      subtree: true
-    });
-    window.addEventListener("resize", scheduleRefresh, { passive: true });
-    window.addEventListener("hashchange", handleHashCommand);
-    window.setInterval(scheduleRefresh, 2500);
-    updatePanel();
-    window.setTimeout(handleHashCommand, 0);
+    Promise.resolve(api.storage.local.get(ENABLED_STORAGE_KEY))
+      .then((values) => boot(values?.[ENABLED_STORAGE_KEY] !== false))
+      .catch(() => boot(true));
+  }
+
+  function onExtensionStorageChanged(changes, areaName) {
+    if (areaName !== "local" || !changes?.[ENABLED_STORAGE_KEY]) return;
+    setExtensionEnabled(changes[ENABLED_STORAGE_KEY].newValue !== false);
+  }
+
+  function boot(enabled = state.enabled) {
+    state.enabled = enabled;
+    if (!document.body) {
+      window.setTimeout(() => boot(enabled), 50);
+      return;
+    }
+
+    if (!state.runtimeStarted) {
+      state.runtimeStarted = true;
+      cleanupLegacyUi();
+      cleanupLegacyAuditMarker();
+      state.observer = new MutationObserver(scheduleRefresh);
+      state.observer.observe(document.documentElement, {
+        attributes: true,
+        childList: true,
+        subtree: true
+      });
+      window.addEventListener("resize", scheduleRefresh, { passive: true });
+      window.addEventListener("hashchange", handleHashCommand);
+      window.setInterval(scheduleRefresh, 2500);
+    }
+
+    syncExtensionUi();
+  }
+
+  function setExtensionEnabled(enabled) {
+    state.enabled = enabled;
+    if (!state.runtimeStarted) {
+      boot(enabled);
+      return;
+    }
+    syncExtensionUi();
+  }
+
+  function syncExtensionUi() {
+    if (state.enabled) {
+      ensurePanel();
+      updatePanel();
+      scheduleRefresh();
+      window.setTimeout(handleHashCommand, 0);
+      return;
+    }
+
+    state.selecting = false;
+    state.selected.clear();
+    state.lastSelectedKey = null;
+    cleanupDecorations();
+    state.panel?.remove();
+    state.panel = null;
+    state.status = "";
   }
 
   function cleanupLegacyUi() {
@@ -93,6 +151,7 @@
   }
 
   function ensurePanel() {
+    if (!state.enabled || !document.body) return null;
     if (state.panel && document.body.contains(state.panel)) {
       return state.panel;
     }
@@ -187,7 +246,7 @@
   }
 
   function scheduleRefresh() {
-    if (!state.selecting || state.deleting || state.refreshTimer) {
+    if (!state.enabled || !state.selecting || state.deleting || state.refreshTimer) {
       return;
     }
 
@@ -198,7 +257,7 @@
   }
 
   function refreshDecorations() {
-    if (!state.selecting || state.deleting || !document.body) {
+    if (!state.enabled || !state.selecting || state.deleting || !document.body) {
       return;
     }
 
@@ -1589,6 +1648,7 @@
 
   function updatePanel() {
     const panel = ensurePanel();
+    if (!panel) return;
     const count = state.selected.size;
     const selecting = state.selecting;
     const deleting = state.deleting;
@@ -1618,7 +1678,7 @@
   }
 
   async function handleHashCommand() {
-    if (!Core.isCodeContext(window.location) || state.deleting) {
+    if (!state.enabled || !Core.isCodeContext(window.location) || state.deleting) {
       return;
     }
 
@@ -2490,5 +2550,5 @@
     return Array.from(new Set(elements.filter(Boolean)));
   }
 
-  boot();
+  initializeExtensionState();
 })();

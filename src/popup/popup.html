@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>LLM Chat Bulk Delete</title>
+    <link rel="stylesheet" href="popup.css">
+  </head>
+  <body>
+    <main>
+      <div class="heading">
+        <img src="icon.svg" alt="" width="32" height="32">
+        <div>
+          <h1>Bulk delete</h1>
+          <p id="status" aria-live="polite">Loading…</p>
+        </div>
+      </div>
+      <label class="setting" for="extension-enabled">
+        <span>
+          <strong>Show controls</strong>
+          <small>ChatGPT, Claude Web, and Claude Code</small>
+        </span>
+        <input id="extension-enabled" type="checkbox" role="switch">
+        <span class="switch" aria-hidden="true"></span>
+      </label>
+    </main>
+    <script src="popup.js"></script>
+  </body>
+</html>
